@@ -1,0 +1,8 @@
+kind: python-web
+package: sitecheck
+start: "python -m http.server {port} --bind 127.0.0.1"
+port: 8000
+health: /index.html
+e2e: "pytest tests/e2e -q"
+a11y_pages: ["/index.html"]
+public: false

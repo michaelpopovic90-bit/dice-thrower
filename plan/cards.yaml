@@ -1,0 +1,254 @@
+schema: factory.plan/1
+cards:
+  - id: SW-001
+    title: "Create the page shell, the static checker and the browser test harness"
+    dept: software
+    recipe: feature-slice
+    phase: execution
+    goal: >
+      After this card the repository contains (a) `index.html` with the complete DOM contract of
+      plan/INTERFACES.md section 2 (lang sv, title "Tärning", #die with data-sides/data-value/data-state and
+      aria-hidden, the #die-canvas element, the #result live region with #result-die and #result-value
+      showing "Tryck på Kasta", the fieldset "Tärning" with six radios T4..T20 and T6 checked, exactly one
+      button "Kasta"), all CSS of section 3 (fixed light colours, result font-size clamp(72px, calc(12vmin +
+      24px), 160px), canvas size min(55vmin, 34vh, 360px), focus ring, layout that fits 375x667 and 1280x800)
+      and a small script whose radio change handler sets #die data-sides synchronously and data-state idle;
+      (b) the Python test harness of section 6 (pyproject.toml, factory.yaml exactly as given, tests/conftest.py,
+      tests/e2e/conftest.py with the fixtures index_url, browser, make_page, page); (c) the `sitecheck` package
+      of section 5 with unit tests reaching at least 70 % coverage. This is NOT a web app: do not copy the
+      FastAPI scaffold, there is no app/ package, no database and no server code. The canvas stays blank in
+      this card; SW-002 draws the die, SW-003 adds throwing. Leave clearly separated places in the one inline
+      <script> for the Renderer object (section 4.5) and the throw controller (4.7), but do not stub them with
+      fake drawing.
+    requirements: [R-001, R-003, R-004, R-007, R-009, R-011, R-012]
+    deps: []
+    owns:
+      - "index.html"
+      - "pyproject.toml"
+      - "factory.yaml"
+      - "sitecheck/**"
+      - "tests/conftest.py"
+      - "tests/unit/test_sitecheck*.py"
+      - "tests/e2e/conftest.py"
+      - "tests/e2e/test_page_shell.py"
+    reads: []
+    produces:
+      - "index.html"
+      - "factory.yaml"
+      - "sitecheck/checks.py"
+      - "tests/e2e/conftest.py"
+      - "tests/e2e/test_page_shell.py"
+    acceptance:
+      - "Opened over file:// in Chromium: <html lang=\"sv\">, document.title == \"Tärning\", #result-value text is \"Tryck på Kasta\", no console errors and no http/https/ws request"
+      - "get_by_role('button') matches exactly one element, named \"Kasta\"; the group named \"Tärning\" holds exactly six radios named T4, T6, T8, T10, T12, T20 and T6 is checked on load"
+      - "Selecting each radio sets #die data-sides to 4, 6, 8, 10, 12, 20; with focus on the checked radio, ArrowRight/ArrowLeft move the selection and data-sides follows (T12 reachable by keys)"
+      - "Computed font-size of #result is >= 96px at 1280x800 and >= 72px at 375x667; at 375x667 the bounding boxes of #die, #result, #die-type and #roll lie fully inside the viewport"
+      - "#result has aria-live=polite, #die has aria-hidden=true, the focused button has a non-none outline; axe in the e2e gate reports no serious/critical violation on /index.html in light and dark schemes"
+      - "sitecheck unit tests prove each rule of html_problems and readme_problems with a passing and a failing input; `python -m sitecheck html` reports a file containing 'https:' or '<script src' and exits 1"
+    verify: "python -m pytest tests/unit -q && RUN_E2E=1 python -m pytest tests/e2e/test_page_shell.py -q"
+    gates:
+      - {id: software.lint, path: "."}
+      - {id: software.tests, path: "."}
+      - {id: software.e2e, path: "."}
+    risk: normal
+    review: false
+    size: M
+
+  - id: SW-002
+    title: "Render the six dice as shaded 3D polyhedra on the canvas"
+    dept: software
+    recipe: feature-slice
+    phase: execution
+    goal: >
+      After this card #die-canvas shows the selected die as a lit 3D solid: tetrahedron (T4), cube with pips
+      (T6), octahedron (T8), pentagonal trapezohedron with kite faces (T10, a = 0.105573), dodecahedron (T12),
+      icosahedron (T20), using exactly the geometry, face numbering, up-vectors, landing orientation with TILT,
+      rest pose, orthographic projection, flat Lambert shading, labels and colours of plan/INTERFACES.md
+      sections 3, 4.3 and 4.4, implemented with Canvas 2D and own code only (no WebGL, no library). Implement
+      the Renderer object of section 4.5 (init, setShape, showFinal, and the interim roll that draws the final
+      pose and calls onDone on the next animation frame) and window.tarningDebug of section 4.8. Wire
+      Renderer.init at load and Renderer.setShape into SW-001's radio change handler. Do not add the throw
+      controller or randomness (SW-003). Keep index.html under 61440 bytes total: aim for <= 25 kB after this
+      card. The test also saves one PNG of #die per die type, in the landing pose of value N, to
+      $E2E_ARTIFACT_DIR/render-T<N>.png for visual review of the shapes.
+    requirements: [R-006, R-001, R-012]
+    deps: [SW-001]
+    owns:
+      - "index.html"
+      - "tests/e2e/test_render.py"
+    reads: []
+    produces:
+      - "index.html"
+      - "tests/e2e/test_render.py"
+    acceptance:
+      - "For sides 4, 6, 8, 10, 12, 20: tarningDebug.faceCount() equals sides and faceSizes() are all 3, 4, 3, 4, 5, 3 respectively"
+      - "For every die type and every value v in 1..N: after tarningDebug.show(N, v), tarningDebug.frontFaceValue() == v"
+      - "At the rest pose of every die type the canvas is not blank and its die pixels contain at least two clearly different face brightnesses (luminance difference >= 10 of 255), proving shading"
+      - "The canvas pixels differ between T6 and T20 at rest (shape actually changes on radio selection) and no console error occurs"
+      - "render-T4.png .. render-T20.png are written for the six types; index.html contains no WebGL context request and no external reference (sitecheck forbidden list)"
+    verify: "RUN_E2E=1 python -m pytest tests/e2e/test_render.py tests/e2e/test_page_shell.py -q"
+    gates:
+      - {id: software.lint, path: "."}
+      - {id: software.tests, path: "."}
+      - {id: software.e2e, path: "."}
+    risk: high
+    review: true
+    size: M
+
+  - id: SW-003
+    title: "Add the fair throw with the multi-axis roll animation and reduced-motion path"
+    dept: software
+    recipe: feature-slice
+    phase: execution
+    goal: >
+      After this card clicking "Kasta" throws the selected die exactly as plan/INTERFACES.md sections 4.1,
+      4.2, 4.6 and 4.7 state: randomInt(n) by rejection sampling over crypto.getRandomValues; ROLL_MS = 1000
+      animation driven by requestAnimationFrame with Q(t) = Rx(sx*4π*(1-e))*Ry(sy*3π*(1-e))*slerp(Q0, Q1, e),
+      e = 1-(1-t)^3, landing exactly on landing(sides, value) from SW-002; SAFETY_MS fallback; #roll and
+      #die-type disabled during the roll and re-enabled at landing; #result-value kept with class is-stale
+      (colour #5c5c5c) during the roll; at landing data-value, data-state=landed, #result-die "T<N>: " and
+      #result-value are set together; with prefers-reduced-motion: reduce (checked on each click) all updates
+      happen synchronously inside the click handler and nothing is ever disabled. Replace only the body of
+      Renderer.roll and add the controller; keep tarningDebug working. After this card
+      `python -m sitecheck html index.html` must pass (size < 61440 bytes).
+    requirements: [R-003, R-005, R-006, R-008, R-011, R-013, R-012, R-001]
+    deps: [SW-002]
+    owns:
+      - "index.html"
+      - "tests/e2e/test_throw.py"
+      - "tests/e2e/test_fairness.py"
+    reads: []
+    produces:
+      - "index.html"
+      - "tests/e2e/test_throw.py"
+      - "tests/e2e/test_fairness.py"
+    acceptance:
+      - "Measured in-page with performance.now(): right after the click #roll is disabled; #result-value changes between 600 and 1500 ms after the click; #roll is enabled again within 1600 ms"
+      - "Canvas snapshots (toDataURL) taken in-page 150 ms and 300 ms after the click differ; after landing #die data-value equals #result-value text and tarningDebug.frontFaceValue() equals it, checked for all six die types"
+      - "With reducedMotion 'reduce': #result-value updates within 100 ms of the click and #roll is never disabled; 6000 throws of T6 and 20000 of T20 give only integers 1..N with every count in 850..1150; N*200 throws of T4, T8, T10, T12 give only 1..N with every value present"
+      - "During an animation in Chromium the mean interval between requestAnimationFrame timestamps recorded by the test is below 20 ms"
+      - "Keyboard: focusing #roll and pressing Enter (and separately Space) produces a new landed result and focus is back on #roll; #result-die reads 'T<N>: ' after landing"
+      - "`python -m sitecheck html index.html` prints OK (contains crypto.getRandomValues and requestAnimationFrame, no external reference, < 61440 bytes)"
+    verify: "python -m sitecheck html index.html && RUN_E2E=1 python -m pytest tests/e2e/test_throw.py tests/e2e/test_fairness.py tests/e2e/test_render.py -q"
+    gates:
+      - {id: software.lint, path: "."}
+      - {id: software.tests, path: "."}
+      - {id: software.e2e, path: "."}
+    risk: high
+    review: true
+    size: M
+
+  - id: SW-004
+    title: "Write the Swedish README for the operator"
+    dept: software
+    recipe: user-docs
+    phase: execution
+    goal: >
+      After this card README.md exists at the repository root, in Swedish, at most 60 lines, for the operator
+      (not for developers). Sections: what the page does (a fair 3D die thrown with one click); how to open it
+      (double-click index.html or drag it into Chrome, Firefox, Safari or Edge; no server and no internet
+      needed, no installation); the dice T4, T6 (pips), T8, T10 (numbered 1–10), T12, T20 with T6 preselected;
+      how to throw (choose the die, press "Kasta"; keyboard: arrow keys choose, Tab to "Kasta", Enter or
+      space); that the big number under the die is the result; that reduced-motion settings skip the animation;
+      that nothing is saved or sent. Use the exact labels of plan/INTERFACES.md section 2. Only index.html and
+      README.md are delivered; do not mention pyproject.toml, tests or the factory. This deviates from the
+      recipe's docs/USER_GUIDE.md and docs/ADMIN_GUIDE.md because BUILD_SPEC R-010 asks for exactly one
+      README.md; the core.files gate is pointed at README.md.
+    requirements: [R-010]
+    deps: [SW-001]
+    owns:
+      - "README.md"
+    reads: []
+    produces:
+      - "README.md"
+    acceptance:
+      - "README.md exists, is Swedish and has at most 60 lines"
+      - "It contains the words index.html, Kasta and T20 and states that no server (and no internet) is needed"
+      - "It names all six dice and the keyboard operation with the labels used on the page"
+      - "`python -m sitecheck readme README.md` prints OK"
+    verify: "python -m sitecheck readme README.md"
+    gates:
+      - {id: core.files, path: ".", params: {files: ["README.md"], min_bytes: 800, forbid: ["lorem ipsum", "TODO", "TBD"]}}
+    risk: low
+    review: false
+    size: S
+
+  - id: SW-005
+    title: "Cover the three user journeys and the full file:// run end to end"
+    dept: software
+    recipe: e2e-suite
+    phase: execution
+    goal: >
+      After this card tests/e2e holds one Chromium test per journey of BUILD_SPEC "Users and usage", each
+      opening index.html over file:// through the make_page fixture of plan/INTERFACES.md section 6:
+      test_journey_first_open.py (scenario 1: static T6 die drawn, T6 checked, button "Kasta", text
+      "Tryck på Kasta"); test_journey_t20.py (scenario 2: choose T20, click Kasta, the button is disabled, the
+      die lands, the big number equals #die data-value and is in 1..20); test_journey_keyboard.py (scenario 3:
+      only the keyboard — Tab to the group, arrow keys to T20, Tab to Kasta, Enter, then Space; each gives a
+      landed result). Also test_journey_all_types.py, the R-002 walk: select each type in turn, throw, wait for
+      the button to be enabled, assert a result in 1..N; at 1280x800 and at 375x667. Every test asserts no
+      console errors and no http/https/ws requests (R-001). Keep `a11y_pages: ["/index.html"]` in
+      factory.yaml (the product has one page). Do not change index.html: a failing journey caused by the page
+      fails this card with step, expected and actual.
+    requirements: [R-001, R-002, R-003, R-004, R-006, R-007, R-009, R-011]
+    deps: [SW-003]
+    owns:
+      - "tests/e2e/test_journey_*.py"
+      - "factory.yaml"
+    reads: []
+    produces:
+      - "tests/e2e/test_journey_first_open.py"
+      - "tests/e2e/test_journey_t20.py"
+      - "tests/e2e/test_journey_keyboard.py"
+      - "tests/e2e/test_journey_all_types.py"
+    acceptance:
+      - "The four journey test files exist and pass in Chromium over file:// with no fixed sleeps (waits are on element state or in-page performance.now())"
+      - "test_journey_all_types throws every die type and sees a result in 1..N at both viewport sizes"
+      - "No test records a console error or a request with scheme http, https, ws or wss"
+      - "The software.e2e gate passes, including axe on /index.html in light and dark schemes"
+    verify: "python -m sitecheck html index.html && RUN_E2E=1 python -m pytest tests/e2e -q"
+    gates:
+      - {id: software.e2e, path: "."}
+    risk: normal
+    review: false
+    size: M
+
+  - id: INT-001
+    title: "Run the page in Chromium and Firefox over file:// and report"
+    dept: integration
+    recipe: system-e2e
+    phase: integration
+    goal: >
+      After this card `bash integration/e2e/run.sh` proves R-002 across two real browser engines, as locked in
+      plan/INTERFACES.md section 7. Side A is the delivered index.html opened as a file:// URL; side B is
+      Playwright-driven Chromium and Firefox (no mock between them). integration/e2e/test_cross_browser.py is
+      parametrised over ["chromium", "firefox"] and, per browser, opens index.html, selects each of T4, T6, T8,
+      T10, T12, T20 in turn, clicks "Kasta", waits for #roll to be enabled, and asserts #result-value is an
+      integer in 1..N equal to #die data-value, no console errors and no http/https/ws requests; then repeats
+      one throw with reducedMotion 'reduce' and asserts the result is set within 100 ms. Firefox is Playwright's
+      own build, installed into .factory/scratch/ms-playwright by run.sh when missing; if it cannot be obtained
+      run.sh prints "FIREFOX NOT VERIFIED: <reason>" and exits 3 (never a pass). integration/e2e/report.md
+      records browser versions, what ran, the results, and that Safari and Edge were not run (Edge is
+      Chromium-based; Safari needs the operator's Mac or iPhone, see plan/RISKS.md). The page path is read
+      from the environment variable INDEX_HTML (default index.html). The script must be runnable twice in a
+      row and leave no browser process behind; its Python files must be ruff-clean with the project config.
+    requirements: [R-002, R-001]
+    deps: [SW-003]
+    owns:
+      - "integration/e2e/**"
+    reads: []
+    produces:
+      - "integration/e2e/run.sh"
+      - "integration/e2e/test_cross_browser.py"
+      - "integration/e2e/report.md"
+    acceptance:
+      - "`bash integration/e2e/run.sh` exits 0 twice in a row, running every die type in both Chromium and Firefox over file://"
+      - "Per browser: zero console errors and zero http/https/ws requests during load and six throws"
+      - "`INDEX_HTML=.factory/scratch/missing.html bash integration/e2e/run.sh` exits non-zero (the check can fail)"
+      - "`ruff check integration` and `ruff format --check integration` are clean (the software.lint gate of later cards covers these files)"
+      - "report.md names the exact browser versions used and lists Safari as needing operator validation"
+    verify: "bash integration/e2e/run.sh"
+    gates: []
+    risk: normal
+    review: true
+    size: M
