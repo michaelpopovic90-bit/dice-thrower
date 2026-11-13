@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tärning</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      background: #f6f4ef;
+      color: #1d1d1f;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+    }
+    main {
+      height: 100vh;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 8px 12px;
+    }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); white-space: nowrap; margin: -1px; padding: 0; border: 0;
+    }
+    #die {
+      width: min(55vmin, 34vh, 360px);
+      height: min(55vmin, 34vh, 360px);
+      flex: none;
+    }
+    #die-canvas { display: block; width: 100%; height: 100%; }
+    #result {
+      font-size: clamp(72px, calc(12vmin + 24px), 160px);
+      line-height: 1.05;
+      text-align: center;
+      font-weight: 700;
+      max-width: 100%;
+    }
+    #result-value.is-stale { color: #5c5c5c; }
+    #die-type {
+      display: flex;
+      flex-wrap: nowrap;
+      justify-content: center;
+      gap: 6px;
+      border: 0;
+      margin: 0;
+      padding: 0;
+      min-width: 0;
+      position: relative;
+    }
+    #die-type legend {
+      position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); white-space: nowrap; padding: 0;
+    }
+    #die-type .opt { position: relative; display: flex; }
+    #die-type input {
+      position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; z-index: 1;
+    }
+    #die-type label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 48px;
+      min-height: 48px;
+      padding: 0 8px;
+      border: 2px solid #1d1d1f;
+      border-radius: 8px;
+      font-size: 18px;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+    }
+    #die-type input:checked + label { background: #1d1d1f; color: #f6f4ef; }
+    #die-type input:disabled + label { cursor: default; }
+    #roll {
+      min-height: 48px;
+      min-width: 160px;
+      padding: 0 24px;
+      font: inherit;
+      font-size: 22px;
+      font-weight: 700;
+      color: #f6f4ef;
+      background: #1d1d1f;
+      border: 2px solid #1d1d1f;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    #roll:disabled { cursor: default; opacity: 0.85; }
+    #roll:focus-visible,
+    #die-type input:focus-visible + label {
+      outline: 3px solid #1a4fd6;
+      outline-offset: 2px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 class="sr-only">Tärning</h1>
+    <div id="die" data-sides="6" data-value="" data-state="idle" aria-hidden="true">
+      <canvas id="die-canvas"></canvas>
+    </div>
+    <div id="result" aria-live="polite" aria-atomic="true">
+      <span id="result-die" class="sr-only"></span><span id="result-value">Tryck på Kasta</span>
+    </div>
+    <fieldset id="die-type">
+      <legend>Tärning</legend>
+      <span class="opt"><input type="radio" name="sides" id="sides-4"  value="4"><label for="sides-4">T4</label></span>
+      <span class="opt"><input type="radio" name="sides" id="sides-6"  value="6" checked><label for="sides-6">T6</label></span>
+      <span class="opt"><input type="radio" name="sides" id="sides-8"  value="8"><label for="sides-8">T8</label></span>
+      <span class="opt"><input type="radio" name="sides" id="sides-10" value="10"><label for="sides-10">T10</label></span>
+      <span class="opt"><input type="radio" name="sides" id="sides-12" value="12"><label for="sides-12">T12</label></span>
+      <span class="opt"><input type="radio" name="sides" id="sides-20" value="20"><label for="sides-20">T20</label></span>
+    </fieldset>
+    <button id="roll" type="button">Kasta</button>
+  </main>
+  <script>
+"use strict";
+(function () {
+  const dieEl = document.getElementById("die");
+
+  // ---- Constants (section 4.1) ----
+  const TILT_X = 12 * Math.PI / 180;
+  const TILT_Y = -10 * Math.PI / 180;
+  const BASE = [243, 239, 228];
+  const INK = "#1b1b1b";
+  const LIGHT = (function () { const l = [-0.4, 0.6, 0.7]; const m = Math.hypot(l[0], l[1], l[2]); return [l[0] / m, l[1] / m, l[2] / m]; })();
+
+  const ROLL_MS = 1000;
+  const SAFETY_MS = ROLL_MS + 150;
+
+  // ---- Randomness (section 4.2) ----
+  const rngBuf = new Uint32Array(1);
+  function randomInt(n) {
+    const limit = 4294967296 - (4294967296 % n);
+    let x;
+    do { crypto.getRandomValues(rngBuf); x = rngBuf[0]; } while (x >= limit);
+    return (x % n) + 1;
+  }
+
+  // ---- Geometry (section 4.3) ----
+  const PHI = (1 + Math.sqrt(5)) / 2;
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const norm = (a) => { const m = Math.hypot(a[0], a[1], a[2]); return [a[0] / m, a[1] / m, a[2] / m]; };
+  const mean = (vs) => vs.reduce((s, v) => [s[0] + v[0], s[1] + v[1], s[2] + v[2]], [0, 0, 0]).map((x) => x / vs.length);
+  const matMul = (A, B) => A.map((row) => [0, 1, 2].map((j) => row[0] * B[0][j] + row[1] * B[1][j] + row[2] * B[2][j]));
+  const matVec = (M, v) => [dot(M[0], v), dot(M[1], v), dot(M[2], v)];
+  const rotX = (a) => [[1, 0, 0], [0, Math.cos(a), -Math.sin(a)], [0, Math.sin(a), Math.cos(a)]];
+  const rotY = (a) => [[Math.cos(a), 0, Math.sin(a)], [0, 1, 0], [-Math.sin(a), 0, Math.cos(a)]];
+  const TILT = matMul(rotY(TILT_Y), rotX(TILT_X));
+
+  function signs(f) {
+    const out = [];
+    for (const x of [1, -1]) { for (const y of [1, -1]) { for (const z of [1, -1]) { out.push(f(x, y, z)); } } }
+    return out;
+  }
+
+  function vertices(sides) {
+    const iphi = 1 / PHI;
+    if (sides === 4) { return [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]]; }
+    if (sides === 6) { return signs((x, y, z) => [x, y, z]); }
+    if (sides === 8) { return [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]; }
+    if (sides === 10) {
+      const a = 0.105573;
+      const vs = [[0, 0, 1], [0, 0, -1]];
+      for (let k = 0; k < 5; k++) { vs.push([Math.cos(k * 2 * Math.PI / 5), Math.sin(k * 2 * Math.PI / 5), a]); }
+      for (let k = 0; k < 5; k++) { vs.push([Math.cos((72 * k + 36) * Math.PI / 180), Math.sin((72 * k + 36) * Math.PI / 180), -a]); }
+      return vs;
+    }
+    const vs = [];
+    if (sides === 12) {
+      signs((x, y, z) => vs.push([x, y, z]));
+      for (const s of [1, -1]) {
+        for (const t of [1, -1]) {
+          vs.push([0, s * iphi, t * PHI], [s * iphi, t * PHI, 0], [s * PHI, 0, t * iphi]);
+        }
+      }
+      return vs;
+    }
+    for (const s of [1, -1]) {
+      for (const t of [1, -1]) {
+        vs.push([0, s, t * PHI], [s, t * PHI, 0], [s * PHI, 0, t]);
+      }
+    }
+    return vs;
+  }
+
+  // Brute-force convex hull: planes through vertex triples with all other vertices on one side.
+  function kites() {
+    const faces = [];
+    for (let k = 0; k < 5; k++) {
+      faces.push([0, 2 + k, 7 + k, 2 + (k + 1) % 5]);
+      faces.push([1, 7 + (k + 4) % 5, 2 + k, 7 + k]);
+    }
+    return faces;
+  }
+
+  function hull(vs, sides) {
+    const EPS = 1e-6;
+    if (sides === 10) {
+      return kites().map(function (idx) {
+        const c = mean(idx.map((i) => vs[i]));
+        let n = norm(cross(sub(vs[idx[1]], vs[idx[0]]), sub(vs[idx[2]], vs[idx[0]])));
+        if (dot(n, c) < 0) { n = [-n[0], -n[1], -n[2]]; idx.reverse(); }
+        return { idx: idx, n: n };
+      });
+    }
+    const seen = new Set();
+    const faces = [];
+    for (let i = 0; i < vs.length; i++) {
+      for (let j = i + 1; j < vs.length; j++) {
+        for (let k = j + 1; k < vs.length; k++) {
+          let n = cross(sub(vs[j], vs[i]), sub(vs[k], vs[i]));
+          if (Math.hypot(n[0], n[1], n[2]) < 1e-9) { continue; }
+          n = norm(n);
+          let d = dot(n, vs[i]);
+          if (d < 0) { n = [-n[0], -n[1], -n[2]]; d = -d; }
+          let ok = true;
+          const idx = [];
+          for (let m = 0; m < vs.length && ok; m++) {
+            const e = dot(n, vs[m]) - d;
+            if (e > EPS) { ok = false; } else if (e > -EPS) { idx.push(m); }
+          }
+          const key = idx.join(",");
+          if (!ok || seen.has(key)) { continue; }
+          seen.add(key);
+          faces.push({ idx: idx, n: n });
+        }
+      }
+    }
+    return faces;
+  }
+
+  function buildShape(sides) {
+    const raw = vertices(sides);
+    const scale = 1 / Math.max.apply(null, raw.map((v) => Math.hypot(v[0], v[1], v[2])));
+    const faces = hull(raw, sides).map(function (h) {
+      let pts = h.idx.map((i) => raw[i]);
+      const c = mean(pts);
+      const e1 = norm(sub(pts[0], c));
+      const e2 = cross(h.n, e1);
+      const ang = (p) => Math.atan2(dot(sub(p, c), e2), dot(sub(p, c), e1));
+      pts = pts.slice().sort((p, q) => ang(p) - ang(q));
+      // first vertex: T10 apex, otherwise largest y (ties: x, then z)
+      let best = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const p = pts[i], q = pts[best];
+        let better;
+        if (sides === 10) { better = Math.abs(p[2]) > Math.abs(q[2]) + 1e-6; }
+        else if (Math.abs(p[1] - q[1]) > 1e-6) { better = p[1] > q[1]; }
+        else if (Math.abs(p[0] - q[0]) > 1e-6) { better = p[0] > q[0]; }
+        else { better = p[2] > q[2] + 1e-6; }
+        if (better) { best = i; }
+      }
+      pts = pts.slice(best).concat(pts.slice(0, best));
+      let u;
+      if (sides === 6) { u = norm(sub([0, 1, 2].map((q) => (pts[0][q] + pts[1][q]) / 2), c)); }
+      else { u = norm(sub(pts[0], c)); }
+      const vs = pts.map((p) => [p[0] * scale, p[1] * scale, p[2] * scale]);
+      const cs = [c[0] * scale, c[1] * scale, c[2] * scale];
+      let inr = Infinity;
+      for (let i = 0; i < vs.length; i++) {
+        const a = vs[i], b = vs[(i + 1) % vs.length];
+        const ed = norm(sub(b, a));
+        const pc = sub(cs, a);
+        const along = dot(pc, ed);
+        inr = Math.min(inr, Math.hypot(pc[0] - along * ed[0], pc[1] - along * ed[1], pc[2] - along * ed[2]));
+      }
+      return { n: h.n, u: u, w: cross(u, h.n), c: cs, vs: vs, inr: inr, edge: Math.hypot.apply(null, sub(vs[1], vs[0])), value: 0 };
+    });
+    faces.sort(function (a, b) {
+      const dz = b.n[2] - a.n[2];
+      if (Math.abs(dz) > 1e-6) { return dz; }
+      return Math.atan2(a.n[1], a.n[0]) - Math.atan2(b.n[1], b.n[0]);
+    });
+    faces.forEach((f, i) => { f.value = i + 1; });
+    return { sides: sides, faces: faces };
+  }
+
+  function landing(shape, value) {
+    const f = shape.faces[value - 1];
+    return matMul(TILT, [f.w, f.u, f.n]);
+  }
+
+  // ---- Drawing (section 4.4) ----
+  const PIPS = {
+    1: [[0, 0]], 2: [[-1, -1], [1, 1]], 3: [[-1, -1], [0, 0], [1, 1]],
+    4: [[-1, -1], [1, -1], [-1, 1], [1, 1]], 5: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]],
+    6: [[-1, -1], [-1, 0], [-1, 1], [1, -1], [1, 0], [1, 1]]
+  };
+  const LOCAL = 100; // face-local units per model unit
+
+  function drawLabel(ctx, shape, f, M, r, cx, cy) {
+    const cp = matVec(M, f.c);
+    const right = matVec(M, f.w);
+    const down = matVec(M, [-f.u[0], -f.u[1], -f.u[2]]);
+    const k = r / LOCAL;
+    ctx.setTransform(right[0] * k, -right[1] * k, down[0] * k, -down[1] * k, cx + cp[0] * r, cy - cp[1] * r);
+    ctx.fillStyle = INK;
+    if (shape.sides === 6) {
+      const step = f.edge / 4 * LOCAL;
+      ctx.beginPath();
+      for (const p of PIPS[f.value]) {
+        ctx.moveTo(p[0] * step + f.edge * 0.11 * LOCAL, p[1] * step);
+        ctx.arc(p[0] * step, p[1] * step, f.edge * 0.11 * LOCAL, 0, 2 * Math.PI);
+      }
+      ctx.fill();
+    } else {
+      const size = 0.45 * 2 * f.inr * LOCAL / 0.72;
+      ctx.font = "700 " + size + "px system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const text = String(f.value);
+      ctx.fillText(text, 0, 0);
+      if (shape.sides >= 10 && (f.value === 6 || f.value === 9)) {
+        const half = ctx.measureText(text).width / 2;
+        ctx.fillRect(-half, size * 0.42, half * 2, size * 0.07);
+      }
+    }
+  }
+
+  function draw(ctx, side, shape, M) {
+    const cx = side / 2, cy = side / 2, r = 0.40 * side;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, side, side);
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 0.46 * side, 0.30 * side, 0.035 * side, 0, 0, 2 * Math.PI);
+    ctx.fill();
+    for (const f of shape.faces) {
+      const nz = matVec(M, f.n);
+      if (nz[2] <= 0) { continue; }
+      const b = 0.35 + 0.65 * Math.max(0, dot(nz, LIGHT));
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.beginPath();
+      f.vs.forEach(function (v, i) {
+        const p = matVec(M, v);
+        if (i === 0) { ctx.moveTo(cx + p[0] * r, cy - p[1] * r); } else { ctx.lineTo(cx + p[0] * r, cy - p[1] * r); }
+      });
+      ctx.closePath();
+      ctx.fillStyle = "rgb(" + BASE.map((c) => Math.min(255, Math.round(c * b))).join(",") + ")";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.35)";
+      ctx.lineWidth = Math.max(1, side / 200);
+      ctx.lineJoin = "round";
+      ctx.stroke();
+      drawLabel(ctx, shape, f, M, r, cx, cy);
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  // ---- Quaternion helpers for the roll (section 4.6) ----
+  function matToQuat(m) {
+    const tr = m[0][0] + m[1][1] + m[2][2];
+    let w, x, y, z;
+    if (tr > 0) {
+      const k = Math.sqrt(tr + 1) * 2; w = k / 4;
+      x = (m[2][1] - m[1][2]) / k; y = (m[0][2] - m[2][0]) / k; z = (m[1][0] - m[0][1]) / k;
+    } else if (m[0][0] > m[1][1] && m[0][0] > m[2][2]) {
+      const k = Math.sqrt(1 + m[0][0] - m[1][1] - m[2][2]) * 2; x = k / 4;
+      w = (m[2][1] - m[1][2]) / k; y = (m[0][1] + m[1][0]) / k; z = (m[0][2] + m[2][0]) / k;
+    } else if (m[1][1] > m[2][2]) {
+      const k = Math.sqrt(1 + m[1][1] - m[0][0] - m[2][2]) * 2; y = k / 4;
+      w = (m[0][2] - m[2][0]) / k; x = (m[0][1] + m[1][0]) / k; z = (m[1][2] + m[2][1]) / k;
+    } else {
+      const k = Math.sqrt(1 + m[2][2] - m[0][0] - m[1][1]) * 2; z = k / 4;
+      w = (m[1][0] - m[0][1]) / k; x = (m[0][2] + m[2][0]) / k; y = (m[1][2] + m[2][1]) / k;
+    }
+    return [w, x, y, z];
+  }
+  function quatToMat(q) {
+    const m = Math.hypot(q[0], q[1], q[2], q[3]);
+    const w = q[0] / m, x = q[1] / m, y = q[2] / m, z = q[3] / m;
+    return [
+      [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+      [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]
+    ];
+  }
+  function slerp(a, b, t) {
+    let d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    let bb = b;
+    if (d < 0) { d = -d; bb = b.map((v) => -v); }
+    let k0, k1;
+    if (d > 0.9995) { k0 = 1 - t; k1 = t; }
+    else {
+      const th = Math.acos(d), s = Math.sin(th);
+      k0 = Math.sin((1 - t) * th) / s; k1 = Math.sin(t * th) / s;
+    }
+    return a.map((v, i) => k0 * v + k1 * bb[i]);
+  }
+
+  // ---- Renderer object (section 4.5) ----
+  const shapes = {};
+  const Renderer = {
+    canvas: null, ctx: null, shape: null, pose: null,
+    init: function (canvas) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext("2d");
+      this.shape = this.shape || this.get(Number(dieEl.dataset.sides) || 6);
+      this.pose = this.pose || landing(this.shape, 1);
+      this.resize();
+      window.addEventListener("resize", () => this.resize());
+    },
+    get: function (sides) { return shapes[sides] || (shapes[sides] = buildShape(sides)); },
+    resize: function () {
+      const css = this.canvas.getBoundingClientRect().width || 300;
+      const px = Math.max(1, Math.round(css * Math.min(window.devicePixelRatio || 1, 2)));
+      if (this.canvas.width !== px) { this.canvas.width = px; this.canvas.height = px; }
+      this.redraw();
+    },
+    redraw: function () { draw(this.ctx, this.canvas.width, this.shape, this.pose); },
+    setShape: function (sides) {
+      this.shape = this.get(sides);
+      this.pose = landing(this.shape, 1);
+      this.redraw();
+    },
+    showFinal: function (sides, value) {
+      this.shape = this.get(sides);
+      this.pose = landing(this.shape, value);
+      this.redraw();
+    },
+    roll: function (sides, value, durationMs, onDone) {
+      const self = this;
+      this.shape = this.get(sides);
+      const q0 = matToQuat(this.pose);
+      const q1 = matToQuat(landing(this.shape, value));
+      const sx = Math.random() < 0.5 ? -1 : 1;
+      const sy = Math.random() < 0.5 ? -1 : 1;
+      const start = performance.now();
+      let finished = false, timer = 0;
+      function finish() {
+        if (finished) { return; }
+        finished = true;
+        clearTimeout(timer);
+        self.showFinal(sides, value);
+        onDone();
+      }
+      function frame(now) {
+        if (finished) { return; }
+        const t = Math.min(1, Math.max(0, (now - start) / durationMs));
+        if (t >= 1) { finish(); return; }
+        const e = 1 - Math.pow(1 - t, 3);
+        const spin = matMul(rotX(sx * 4 * Math.PI * (1 - e)), rotY(sy * 3 * Math.PI * (1 - e)));
+        self.pose = matMul(spin, quatToMat(slerp(q0, q1, e)));
+        self.redraw();
+        requestAnimationFrame(frame);
+      }
+      timer = setTimeout(finish, SAFETY_MS);
+      requestAnimationFrame(frame);
+    }
+  };
+  Renderer.init(document.getElementById("die-canvas"));
+
+  // ---- Die type selection ----
+  document.querySelectorAll('input[name="sides"]').forEach(function (radio) {
+    radio.addEventListener("change", function () {
+      if (!radio.checked) { return; }
+      dieEl.dataset.sides = radio.value;
+      dieEl.dataset.state = "idle";
+      Renderer.setShape(Number(radio.value));
+    });
+  });
+
+  // ---- Throw controller (section 4.7) ----
+  const rollBtn = document.getElementById("roll");
+  const typeSet = document.getElementById("die-type");
+  const resultDie = document.getElementById("result-die");
+  const resultValue = document.getElementById("result-value");
+  function land(n, v) {
+    dieEl.dataset.value = String(v);
+    dieEl.dataset.state = "landed";
+    resultDie.textContent = "T" + n + ": ";
+    resultValue.textContent = String(v);
+  }
+  rollBtn.addEventListener("click", function () {
+    const n = Number(dieEl.dataset.sides);
+    const v = randomInt(n);
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      land(n, v);
+      Renderer.showFinal(n, v);
+      return;
+    }
+    const hadFocus = document.activeElement === rollBtn;
+    rollBtn.disabled = true;
+    typeSet.disabled = true;
+    dieEl.dataset.state = "rolling";
+    resultValue.classList.add("is-stale");
+    Renderer.roll(n, v, ROLL_MS, function () {
+      land(n, v);
+      resultValue.classList.remove("is-stale");
+      rollBtn.disabled = false;
+      typeSet.disabled = false;
+      if (hadFocus) { rollBtn.focus(); }
+    });
+  });
+
+  // ---- Test hook (section 4.8) ----
+  window.tarningDebug = {
+    faceCount: () => Renderer.shape.faces.length,
+    faceSizes: () => Renderer.shape.faces.map((f) => f.vs.length),
+    frontFaceValue: function () {
+      let best = null, bz = -Infinity;
+      for (const f of Renderer.shape.faces) {
+        const z = matVec(Renderer.pose, f.n)[2];
+        if (z > bz) { bz = z; best = f; }
+      }
+      return best.value;
+    },
+    show: function (sides, value) { Renderer.setShape(sides); Renderer.showFinal(sides, value); }
+  };
+})();
+  </script>
+</body>
+</html>
